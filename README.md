@@ -11,6 +11,60 @@ This system generates daily recommended target positions for pair trades based o
 
 All data is stored in versioned Parquet datasets. Every run produces a complete artifact directory that enables deterministic replay.
 
+## Workflow
+
+    +----------------+     +----------------+     +----------------+
+    |   FMP API      |     |    Tickets     |     |   Universe     |
+    |  (prices)      |     |    (YAML)      |     |    (YAML)      |
+    +-------+--------+     +-------+--------+     +-------+--------+
+            |                      |                      |
+            v                      v                      v
+    +-------+--------+     +-------+--------+     +-------+--------+
+    | ingest-prices  |     |  tickets/      |     | universe.yaml  |
+    |                |     |  active/       |     |                |
+    +-------+--------+     +-------+--------+     +----------------+
+            |                      |
+            v                      |
+    +-------+--------+             |
+    | data/fmp_cache |             |
+    | daily_bars/    |             |
+    +-------+--------+             |
+            |                      |
+            +----------+-----------+
+                       |
+                       v
+               +-------+--------+
+               | build-features |
+               +-------+--------+
+                       |
+                       v
+               +-------+--------+
+               | data/features/ |
+               | pair_state/    |
+               +-------+--------+
+                       |
+                       v
+               +-------+--------+
+               | run-controller |-------> decisions.parquet
+               +-------+--------+         blotter.csv
+                       |                  metrics.json
+                       v
+               +-------+--------+
+               |    realize     |-------> realized.parquet
+               +-------+--------+         (PnL labels)
+                       |
+                       v
+               +-------+--------+
+               |  train-policy  |-------> model.json
+               +----------------+         (RL weights)
+
+    Interactive:
+    +----------------+
+    |    console     |-------> Ideal Portfolio (exact net zero)
+    |                |-------> Backtest (historical PnL)
+    |                |-------> Draft Tickets
+    +----------------+
+
 ## Installation
 
     pip install -r requirements.txt
