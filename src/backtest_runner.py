@@ -27,7 +27,6 @@ from src.run_engine import get_git_sha
 from src.portfolio_generator import (
     aggregate_ticket_decisions,
     apply_portfolio_governor,
-    CLAMP_NET_TO_CASH,
 )
 
 
@@ -237,7 +236,8 @@ def run_backtest(
 
         if day_result.get("skipped_due_to_prices"):
             days_skipped_due_to_prices += 1
-            # Do NOT add to daily_results - skip entirely
+            # Update state for correct turnover on next day, but do NOT add to daily_results
+            prev_symbol_notionals = day_result["symbol_notionals"]
             continue
 
         days_with_pnl += 1
@@ -435,6 +435,20 @@ def _run_single_day(
             "symbol_notionals": symbol_notionals.copy(),
             "skipped_due_to_prices": True,
         }
+
+    # Verify all nontrivial symbols have price data for both asof_date and next_date
+    # Skip entire day if any price is missing (no partial PnL allowed)
+    if common_next_date is not None and nontrivial_symbols:
+        for symbol in nontrivial_symbols:
+            price_today = get_price_on_date(config, symbol, asof_date)
+            price_next = get_price_on_date(config, symbol, common_next_date)
+            if price_today is None or price_next is None:
+                logs.append(f"  {asof_date}: Missing price for {symbol}, skipping PnL")
+                return {
+                    "asof_date": asof_date,
+                    "symbol_notionals": symbol_notionals.copy(),
+                    "skipped_due_to_prices": True,
+                }
 
     # Compute turnover (change from previous day)
     turnover = 0.0
