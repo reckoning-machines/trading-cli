@@ -130,6 +130,24 @@ Show all trained RL models.
 
     python banksctl.py list-models
 
+### console
+
+Start the interactive prompt console for portfolio management.
+
+    python banksctl.py console
+
+The console supports four intents:
+- **SUMMARIZE**: Show strategy overview ("summarize todays strategy", "status")
+- **GENERATE_IDEAL_PORTFOLIO**: Generate symbol-level portfolio ("generate todays ideal portfolio")
+- **RUN_BACKTEST**: Run historical backtest ("backtest last 6 months")
+- **DRAFT_TICKET**: Create ticket drafts ("draft ticket for JPM and BAC")
+
+Portfolio constraints (environment variables):
+- PORTFOLIO_MAX_GROSS_NOTIONAL: Maximum total gross notional
+- PORTFOLIO_MAX_NAME_GROSS_NOTIONAL: Maximum gross per symbol
+
+The portfolio generator enforces exact net zero exposure by adding a synthetic CASH leg.
+
 ## Ticket Format
 
 Tickets are YAML files placed in tickets/active/. Required fields:

@@ -487,5 +487,15 @@ def realize(
     console.print(f"  - data/labels/realized/version={label_version}/asof_date={asof_date}/")
 
 
+@app.command("console")
+def console_cmd():
+    """Start the interactive prompt console for portfolio management."""
+    config = get_config_or_exit()
+    ensure_directories(config)
+
+    from src.prompt_console import run_console
+    run_console(config)
+
+
 if __name__ == "__main__":
     app()

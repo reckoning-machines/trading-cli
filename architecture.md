@@ -342,7 +342,7 @@ Without model_version, returns 0.0 (no position).
 
 ## Module Responsibilities
 
-- config.py: Environment variable loading, path configuration
+- config.py: Environment variable loading, path configuration, portfolio constraints
 - fmp_client.py: FMP API interaction, data fetching
 - storage.py: Parquet I/O, directory management
 - tickets.py: YAML parsing, ticket validation
@@ -356,5 +356,69 @@ Without model_version, returns 0.0 (no position).
 - training_dataset.py: Build training examples with 5-day rewards
 - policy_bandit.py: Ridge regression contextual bandit
 - train.py: Training orchestration and evaluation
+- portfolio_generator.py: Ideal portfolio generation with exact net zero
+- backtest_runner.py: Historical backtest execution
+- ticket_drafter.py: Draft ticket creation and validation
+- prompt_console.py: Interactive REPL console
 - reporting.py: Terminal output formatting
 - banksctl.py: CLI entrypoint
+
+## Prompt Console
+
+The prompt console provides an interactive interface for portfolio management.
+
+### Supported Intents
+
+1. SUMMARIZE - Show strategy overview and today's portfolio status
+2. GENERATE_IDEAL_PORTFOLIO - Generate symbol-level portfolio with exact net zero
+3. RUN_BACKTEST - Run historical backtest with today's tickets
+4. DRAFT_TICKET - Create or validate ticket drafts
+
+### Usage
+
+    banksctl console
+
+### Plan-Then-Run Model
+
+For non-trivial operations, the console:
+1. Parses user intent from natural language
+2. Builds a plan with required parameters
+3. Asks for missing parameters one at a time
+4. Shows the complete plan for confirmation
+5. Executes only after user approval
+
+### Portfolio Generation
+
+The ideal portfolio generator:
+1. Loads active tickets for asof_date
+2. Computes per-ticket actions using selected controller
+3. Applies per-ticket governor (leg caps, gross cap, breakdown)
+4. Aggregates to symbol-level notionals
+5. Applies portfolio governor (name caps, portfolio gross cap)
+6. Adds CASH leg to achieve exact net zero
+7. Writes artifacts to run directory
+
+Portfolio Schema:
+- run_id (string)
+- asof_date (date)
+- symbol (string)
+- notional (float64)
+- source_ticket_ids (string, comma-separated)
+- clamp_codes (string, comma-separated)
+- is_cash (int8)
+
+### Portfolio Constraints
+
+Environment variables:
+- PORTFOLIO_MAX_GROSS_NOTIONAL: Maximum total gross notional
+- PORTFOLIO_MAX_NAME_GROSS_NOTIONAL: Maximum gross per symbol
+
+Clamp codes:
+- NAME_GROSS_CLAMP: Symbol notional reduced to name cap
+- PORTFOLIO_GROSS_CLAMP: All notionals scaled to meet portfolio cap
+- NET_TO_CASH: CASH leg added for exact net zero
+
+### Ticket Drafting
+
+Draft tickets are saved to tickets/drafts/ and never overwrite tickets/active/.
+User must manually promote drafts to active.
