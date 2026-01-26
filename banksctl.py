@@ -308,6 +308,127 @@ def test_harness():
         raise typer.Exit(1)
 
 
+@app.command("train-policy")
+def train_policy_cmd(
+    train_start: str = typer.Option(..., help="Training start date (YYYY-MM-DD)"),
+    train_end: str = typer.Option(..., help="Training end date (YYYY-MM-DD)"),
+    eval_start: str = typer.Option(..., help="Evaluation start date (YYYY-MM-DD)"),
+    eval_end: str = typer.Option(..., help="Evaluation end date (YYYY-MM-DD)"),
+    feature_version: str = typer.Option("v1", help="Feature version string"),
+    label_version: str = typer.Option("v1", help="Label version string"),
+    model_version: str = typer.Option(..., help="Model version string to save"),
+    seed: int = typer.Option(42, help="Random seed for reproducibility"),
+    lambda_reg: float = typer.Option(1.0, help="Ridge regression regularization"),
+    reward_horizon: int = typer.Option(5, help="Reward horizon in trading days"),
+):
+    """Train RL policy using contextual bandit with ridge regression."""
+    config = get_config_or_exit()
+    ensure_directories(config)
+
+    from src.train import train_policy, list_available_models
+
+    train_start_date = date.fromisoformat(train_start)
+    train_end_date = date.fromisoformat(train_end)
+    eval_start_date = date.fromisoformat(eval_start)
+    eval_end_date = date.fromisoformat(eval_end)
+
+    console.print(f"\n[bold]Training RL Policy[/bold]")
+    console.print(f"Training period: {train_start_date} to {train_end_date}")
+    console.print(f"Evaluation period: {eval_start_date} to {eval_end_date}")
+    console.print(f"Feature version: {feature_version}")
+    console.print(f"Label version: {label_version}")
+    console.print(f"Model version: {model_version}")
+    console.print(f"Seed: {seed}")
+    console.print(f"Lambda (regularization): {lambda_reg}")
+    console.print(f"Reward horizon: {reward_horizon} days\n")
+
+    try:
+        report = train_policy(
+            config=config,
+            train_start=train_start_date,
+            train_end=train_end_date,
+            eval_start=eval_start_date,
+            eval_end=eval_end_date,
+            feature_version=feature_version,
+            label_version=label_version,
+            model_version=model_version,
+            seed=seed,
+            lambda_reg=lambda_reg,
+            reward_horizon=reward_horizon,
+        )
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+    if "error" in report:
+        console.print(f"[red]Training failed: {report['error']}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Training completed successfully[/green]\n")
+
+    console.print(f"[bold]Training Summary:[/bold]")
+    console.print(f"  Training examples: {report['n_train_examples']}")
+    console.print(f"  Evaluation examples: {report['n_eval_examples']}")
+
+    train_stats = report.get("train_stats", {})
+    if "action_stats" in train_stats:
+        console.print(f"\n[bold]Per-Action Training Stats:[/bold]")
+        for action, stats in sorted(train_stats["action_stats"].items()):
+            console.print(f"  Action {action}:")
+            console.print(f"    Samples: {stats.get('n_samples', 0)}")
+            console.print(f"    Mean reward: ${stats.get('mean_reward', 0):.2f}")
+            if "mse" in stats:
+                console.print(f"    MSE: {stats['mse']:.4f}")
+
+    eval_stats = report.get("eval_stats", {})
+    if eval_stats and "error" not in eval_stats:
+        console.print(f"\n[bold]Evaluation Results:[/bold]")
+        console.print(f"  Baseline mean reward: ${eval_stats.get('baseline_mean_reward', 0):.2f}")
+        console.print(f"  Predicted mean reward: ${eval_stats.get('predicted_mean_reward', 0):.2f}")
+        console.print(f"  Agreement rate: {eval_stats.get('agreement_rate', 0)*100:.1f}%")
+
+        console.print(f"\n[bold]Action Distribution:[/bold]")
+        baseline_counts = eval_stats.get("baseline_action_counts", {})
+        learned_counts = eval_stats.get("learned_action_counts", {})
+        console.print(f"  {'Action':<10} {'Baseline':<10} {'Learned':<10}")
+        for action in [-1.0, -0.5, 0.0, 0.5, 1.0]:
+            b_count = baseline_counts.get(action, 0)
+            l_count = learned_counts.get(action, 0)
+            console.print(f"  {action:<10} {b_count:<10} {l_count:<10}")
+
+    model_dir = config.pair_policy_dir / f"version={model_version}"
+    console.print(f"\n[green]Model saved to: {model_dir}[/green]")
+
+
+@app.command("list-models")
+def list_models():
+    """List all trained RL models."""
+    config = get_config_or_exit()
+
+    from src.train import list_available_models
+
+    models = list_available_models(config)
+
+    if not models:
+        console.print("[yellow]No trained models found[/yellow]")
+        return
+
+    console.print("\n[bold]Available Models:[/bold]\n")
+    for version, info in sorted(models.items()):
+        console.print(f"  [cyan]{version}[/cyan]")
+        if "trained_at" in info:
+            console.print(f"    Trained: {info['trained_at']}")
+        if "n_train_examples" in info:
+            console.print(f"    Training examples: {info['n_train_examples']}")
+        if "train_start" in info and "train_end" in info:
+            console.print(f"    Train period: {info['train_start']} to {info['train_end']}")
+        eval_stats = info.get("eval_stats", {})
+        if eval_stats and "baseline_mean_reward" in eval_stats:
+            console.print(f"    Baseline reward: ${eval_stats['baseline_mean_reward']:.2f}")
+            console.print(f"    Predicted reward: ${eval_stats.get('predicted_mean_reward', 0):.2f}")
+        console.print()
+
+
 @app.command("realize")
 def realize(
     asof: str = typer.Option(..., help="As-of date (YYYY-MM-DD)"),

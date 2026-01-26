@@ -169,6 +169,26 @@ Schema:
 - last_notional_b (float64): Last executed notional in leg B
 - last_asof_date (date): Date of last execution
 
+### Trained Models
+
+Path: data/models/pair_policy/version=VERSION/
+
+Files:
+- model.json: Ridge regression weights and normalization parameters
+- training_report.json: Training configuration and evaluation metrics
+- train_examples.parquet: Snapshot of training data
+- eval_examples.parquet: Snapshot of evaluation data
+
+model.json Schema:
+- weights: Dictionary mapping action (string) to weight vector (array)
+- feature_means: Array of feature means for normalization
+- feature_stds: Array of feature standard deviations
+- lambda_reg: Ridge regularization parameter
+- seed: Random seed used
+- feature_columns: List of feature column names
+- is_fitted: Boolean indicating if model was trained
+- training_stats: Per-action training statistics
+
 ## Determinism and Replay Rules
 
 1. Fixed Seeds: All stochastic operations use explicit seeds passed as CLI arguments
@@ -248,45 +268,77 @@ Schema:
 - BREAKDOWN_FLATTEN: Position zeroed due to extreme_z and flatten_on_breakdown
 - EXPIRED_SKIP: Ticket expired, no action taken
 
-## Adding RL Without Changing Storage Contracts
+## RL Training Pipeline
 
-The RL controller stub (controller_rl_stub.py) provides the same interface as the baseline controller:
+The RL training pipeline uses a contextual bandit approach with ridge regression:
 
-    def compute_target_units(ticket, zscore, orientation, seed) -> float
-    def compute_notionals(units, beta, max_gross_notional, orientation) -> Tuple[float, float]
-    def get_controller_version() -> str
+### Training Dataset (training_dataset.py)
 
-To implement a full RL controller:
+Build training examples with function:
 
-1. Replace the stub logic in compute_target_units with:
-   - State construction from features
-   - Policy model loading (checkpoint path from config)
-   - Inference to get action distribution
-   - Action sampling or argmax
+    build_training_examples(start_date, end_date, feature_version, label_version) -> DataFrame
 
-2. The output interface remains unchanged:
-   - Returns a float in [-1.0, 1.0] range
-   - Will be discretized by clamp_to_allowed()
-   - Passes through same risk_governor
+Schema:
+- asof_date (date)
+- pair_id (string)
+- ticket_id (string)
+- State features: zscore, beta, beta_stability, spread, no_mean_cross_days, extreme_z
+- Ticket conditioning: conviction_scaled, max_gross_notional_scaled, orientation_onehot, horizon_scaled, time_stop_scaled
+- action_units (float64): Discrete action taken
+- reward_5d (float64): Sum of pnl_net over next 5 trading days
 
-3. Storage contracts remain identical:
-   - Same decisions.parquet schema
-   - Same manifest.json structure
-   - Only controller_version field changes
+### Policy Model (policy_bandit.py)
 
-4. No changes required to:
-   - Feature computation
-   - Risk governor
-   - Run engine
-   - CLI commands
-   - Reporting
+Contextual bandit with ridge regression per action:
 
-5. Training pipeline (future work):
-   - Read historical features from data/features/pair_state/
-   - Define reward function from realized P&L
-   - Train offline on historical trajectories
-   - Save policy checkpoints to models/ directory
-   - Update controller_rl_stub.py to load and serve
+    w_a = (X_a^T X_a + lambda I)^-1 X_a^T y_a
+
+Where:
+- X_a: State features for examples where action a was taken
+- y_a: Corresponding 5-day rewards
+- lambda: Regularization parameter (default 1.0)
+
+At inference time:
+- Predict expected reward for each action: E[r|s,a] = w_a^T x
+- Select action with highest predicted reward (greedy)
+
+### Model Storage
+
+Path: data/models/pair_policy/version=VERSION/
+
+Files:
+- model.json: Weights, normalization stats, metadata
+- training_report.json: Training configuration and evaluation results
+- train_examples.parquet: Training data snapshot
+- eval_examples.parquet: Evaluation data snapshot
+
+### CLI Command
+
+    banksctl train-policy --train-start YYYY-MM-DD --train-end YYYY-MM-DD \
+        --eval-start YYYY-MM-DD --eval-end YYYY-MM-DD \
+        --feature-version v1 --label-version v1 --model-version v1 --seed 42
+
+### Walk-Forward Evaluation
+
+The training pipeline performs walk-forward evaluation:
+1. Train on [train_start, train_end]
+2. Evaluate on [eval_start, eval_end]
+3. Compare learned policy actions vs baseline
+4. Report agreement rate and predicted reward improvement
+
+### Using Trained Models
+
+The RL controller (controller_rl_stub.py) loads trained models:
+
+    def compute_target_units(ticket, zscore, seed, config, model_version, beta, ...) -> float
+
+When model_version is provided:
+1. Load policy from data/models/pair_policy/version=MODEL_VERSION/
+2. Construct state features from inputs
+3. Predict expected reward for each action
+4. Return action with highest predicted reward
+
+Without model_version, returns 0.0 (no position).
 
 ## Module Responsibilities
 
@@ -298,8 +350,11 @@ To implement a full RL controller:
 - features_pair_state.py: Feature computation (beta, spread, zscore)
 - risk_governor.py: Position limit enforcement
 - controller_baseline.py: Deterministic mean-reversion policy
-- controller_rl_stub.py: RL policy placeholder
+- controller_rl_stub.py: RL policy with trained model support
 - run_engine.py: Orchestration, artifact generation
 - realized_pnl.py: Realized PnL and cost label computation
+- training_dataset.py: Build training examples with 5-day rewards
+- policy_bandit.py: Ridge regression contextual bandit
+- train.py: Training orchestration and evaluation
 - reporting.py: Terminal output formatting
 - banksctl.py: CLI entrypoint

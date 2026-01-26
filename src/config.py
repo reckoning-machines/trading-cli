@@ -57,6 +57,14 @@ class Config:
     def last_positions_dir(self) -> Path:
         return self.state_dir / "last_positions"
 
+    @property
+    def models_dir(self) -> Path:
+        return self.data_dir / "models"
+
+    @property
+    def pair_policy_dir(self) -> Path:
+        return self.models_dir / "pair_policy"
+
 
 def load_config() -> Config:
     fmp_api_key = os.environ.get("FMP_API_KEY")

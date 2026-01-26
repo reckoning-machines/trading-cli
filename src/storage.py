@@ -20,6 +20,7 @@ def ensure_directories(config: Config) -> None:
     Path(config.tickets_dir).parent.joinpath("archived").mkdir(parents=True, exist_ok=True)
     config.realized_labels_dir.mkdir(parents=True, exist_ok=True)
     config.last_positions_dir.mkdir(parents=True, exist_ok=True)
+    config.pair_policy_dir.mkdir(parents=True, exist_ok=True)
 
 
 def write_daily_bars(config: Config, symbol: str, df: pl.DataFrame) -> None:

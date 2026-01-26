@@ -109,6 +109,27 @@ Outputs:
 - runs/run_id=RUN_ID/realized.parquet (run artifact)
 - data/labels/realized/version=v1/asof_date=YYYY-MM-DD/ (canonical labels)
 
+### train-policy
+
+Train an RL policy using contextual bandit with ridge regression.
+
+    python banksctl.py train-policy --train-start YYYY-MM-DD --train-end YYYY-MM-DD \
+        --eval-start YYYY-MM-DD --eval-end YYYY-MM-DD \
+        --feature-version v1 --label-version v1 --model-version v1 \
+        [--seed 42] [--lambda-reg 1.0] [--reward-horizon 5]
+
+Outputs:
+- data/models/pair_policy/version=v1/model.json (trained model weights)
+- data/models/pair_policy/version=v1/training_report.json (training metrics)
+- data/models/pair_policy/version=v1/train_examples.parquet (training data)
+- data/models/pair_policy/version=v1/eval_examples.parquet (evaluation data)
+
+### list-models
+
+Show all trained RL models.
+
+    python banksctl.py list-models
+
 ## Ticket Format
 
 Tickets are YAML files placed in tickets/active/. Required fields:
@@ -166,6 +187,13 @@ Contents:
         realized/
           version=v1/
             asof_date=2026-01-26/part-0000.parquet
+      models/
+        pair_policy/
+          version=v1/
+            model.json
+            training_report.json
+            train_examples.parquet
+            eval_examples.parquet
       state/
         last_positions/
           positions.parquet
