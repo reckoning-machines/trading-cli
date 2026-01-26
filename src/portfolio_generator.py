@@ -4,6 +4,7 @@ import hashlib
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
+from dataclasses import dataclass
 from collections import defaultdict
 
 import numpy as np
@@ -31,11 +32,137 @@ CLAMP_PORTFOLIO_GROSS = "PORTFOLIO_GROSS_CLAMP"
 CLAMP_NET_TO_CASH = "NET_TO_CASH"
 
 
+@dataclass
+class PortfolioGovernorResult:
+    # Symbol-level net notionals (after all clamps, before CASH)
+    symbol_net: Dict[str, float]
+    # Per-ticket contributions by symbol (after all clamps)
+    contributions_by_symbol: Dict[str, Dict[str, float]]
+    # Clamp codes by symbol
+    symbol_clamp_codes: Dict[str, List[str]]
+    # Source tickets by symbol
+    symbol_source_tickets: Dict[str, List[str]]
+    # Metrics
+    name_caps_triggered: int
+    portfolio_gross_clamped: bool
+
+
 def generate_portfolio_run_id(asof_date: date, seed: int) -> str:
     ts = datetime.utcnow().strftime("%Y-%m-%dT%H%M%SZ")
     hash_input = f"portfolio_{ts}_{seed}".encode()
     short_hash = hashlib.sha256(hash_input).hexdigest()[:8]
     return f"portfolio_{ts}_{short_hash}"
+
+
+def aggregate_ticket_decisions(
+    ticket_decisions: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Dict[str, float]], Dict[str, List[str]]]:
+    # Aggregate ticket-level notionals to symbol-level, tracking per-ticket contributions
+    # contributions_by_symbol[symbol][ticket_id] = executed_notional contribution
+    contributions_by_symbol: Dict[str, Dict[str, float]] = defaultdict(dict)
+    symbol_source_tickets: Dict[str, List[str]] = defaultdict(list)
+
+    for dec in ticket_decisions:
+        leg_a = dec["leg_a"]
+        leg_b = dec["leg_b"]
+        ticket_id = dec["ticket_id"]
+
+        # Track per-ticket contribution for each symbol
+        contributions_by_symbol[leg_a][ticket_id] = dec["executed_notional_a"]
+        contributions_by_symbol[leg_b][ticket_id] = dec["executed_notional_b"]
+
+        if ticket_id not in symbol_source_tickets[leg_a]:
+            symbol_source_tickets[leg_a].append(ticket_id)
+        if ticket_id not in symbol_source_tickets[leg_b]:
+            symbol_source_tickets[leg_b].append(ticket_id)
+
+    return dict(contributions_by_symbol), dict(symbol_source_tickets)
+
+
+def apply_portfolio_governor(
+    contributions_by_symbol: Dict[str, Dict[str, float]],
+    symbol_source_tickets: Dict[str, List[str]],
+    portfolio_max_gross_notional: float,
+    portfolio_max_name_gross_notional: float,
+    logs: Optional[List[str]] = None,
+) -> PortfolioGovernorResult:
+    # Apply portfolio-level constraints using true per-name GROSS (sum of absolute contributions)
+    # This is the single source of truth for portfolio governor logic.
+    # Both ideal portfolio generation and backtest MUST call this function.
+
+    if logs is None:
+        logs = []
+
+    symbol_clamp_codes: Dict[str, List[str]] = defaultdict(list)
+    name_caps_triggered = 0
+    portfolio_gross_clamped = False
+
+    # Make a working copy of contributions
+    working_contributions: Dict[str, Dict[str, float]] = {
+        symbol: dict(ticket_contribs)
+        for symbol, ticket_contribs in contributions_by_symbol.items()
+    }
+
+    # Step 1: Apply per-name gross cap BEFORE portfolio gross
+    # Gross is defined as sum of absolute per-ticket contributions for that symbol
+    for symbol in sorted(working_contributions.keys()):
+        ticket_contribs = working_contributions[symbol]
+
+        # Compute symbol gross = sum(abs(contributions))
+        symbol_gross = sum(abs(c) for c in ticket_contribs.values())
+
+        if symbol_gross > portfolio_max_name_gross_notional:
+            scale = portfolio_max_name_gross_notional / symbol_gross
+            old_gross = symbol_gross
+
+            # Scale ALL contributions for that symbol
+            for ticket_id in ticket_contribs:
+                ticket_contribs[ticket_id] = ticket_contribs[ticket_id] * scale
+
+            symbol_clamp_codes[symbol].append(CLAMP_NAME_GROSS)
+            name_caps_triggered += 1
+
+            new_gross = sum(abs(c) for c in ticket_contribs.values())
+            logs.append(
+                f"Name gross cap: {symbol} scaled gross from {old_gross:,.0f} to {new_gross:,.0f}"
+            )
+
+    # Step 2: Compute symbol net after per-name gross clamps
+    symbol_net: Dict[str, float] = {}
+    for symbol in sorted(working_contributions.keys()):
+        symbol_net[symbol] = sum(working_contributions[symbol].values())
+
+    # Step 3: Apply portfolio gross cap (equity-only: excludes CASH)
+    # Portfolio gross is sum(abs(symbol_net[s])) for equity symbols
+    equity_symbols = [s for s in symbol_net.keys() if s != CASH_SYMBOL]
+    portfolio_gross = sum(abs(symbol_net[s]) for s in equity_symbols)
+
+    if portfolio_gross > portfolio_max_gross_notional:
+        scale = portfolio_max_gross_notional / portfolio_gross
+        portfolio_gross_clamped = True
+
+        # Scale all equity symbol contributions proportionally
+        for symbol in equity_symbols:
+            for ticket_id in working_contributions[symbol]:
+                working_contributions[symbol][ticket_id] *= scale
+            symbol_net[symbol] *= scale
+            symbol_clamp_codes[symbol].append(CLAMP_PORTFOLIO_GROSS)
+
+        logs.append(f"Portfolio gross cap applied: scale={scale:.4f}")
+
+    # Sort clamp codes for determinism
+    sorted_clamp_codes = {
+        symbol: sorted(codes) for symbol, codes in symbol_clamp_codes.items()
+    }
+
+    return PortfolioGovernorResult(
+        symbol_net=symbol_net,
+        contributions_by_symbol=working_contributions,
+        symbol_clamp_codes=sorted_clamp_codes,
+        symbol_source_tickets=symbol_source_tickets,
+        name_caps_triggered=name_caps_triggered,
+        portfolio_gross_clamped=portfolio_gross_clamped,
+    )
 
 
 def generate_ideal_portfolio(
@@ -77,7 +204,10 @@ def generate_ideal_portfolio(
     if not tickets:
         logs.append("No active tickets - empty portfolio")
         write_logs(run_dir, "\n".join(logs))
-        return _create_empty_portfolio_result(config, run_dir, run_id, asof_date, feature_version, logs)
+        return _create_empty_portfolio_result(
+            config, run_dir, run_id, asof_date, feature_version, seed,
+            portfolio_max_gross_notional, portfolio_max_name_gross_notional, logs
+        )
 
     # Snapshot tickets
     snapshot_result = snapshot_tickets(tickets, run_dir)
@@ -86,7 +216,7 @@ def generate_ideal_portfolio(
     features_df = read_pair_state_features(config, feature_version, asof_date)
     if features_df is None:
         logs.append(f"ERROR: No features found for {asof_date} with version {feature_version}")
-        logs.append("Run: banksctl build-features --asof {asof_date}")
+        logs.append(f"Run: banksctl build-features --asof {asof_date}")
         write_logs(run_dir, "\n".join(logs))
         raise ValueError(
             f"No features found for {asof_date} with version {feature_version}. "
@@ -116,8 +246,9 @@ def generate_ideal_portfolio(
             logs.append(f"WARNING: No features for pair {pair_id}, skipping ticket {ticket.ticket_id}")
             continue
 
+        # Enforce feature row uniqueness
         if pair_features.height > 1:
-            raise ValueError(f"Multiple feature rows for pair {pair_id}")
+            raise ValueError(f"Multiple feature rows for pair {pair_id}: expected 1, got {pair_features.height}")
 
         feat_row = pair_features.row(0, named=True)
         beta = feat_row["beta"]
@@ -184,19 +315,24 @@ def generate_ideal_portfolio(
             f"A={governor_result.executed_notional_a:,.0f}, B={governor_result.executed_notional_b:,.0f}"
         )
 
-    # Step 4: Aggregate to symbol-level totals
-    symbol_notionals, symbol_source_tickets = _aggregate_to_symbols(ticket_decisions)
-    logs.append(f"Aggregated to {len(symbol_notionals)} symbols")
+    # Step 4: Aggregate to symbol-level with per-ticket tracking
+    contributions_by_symbol, symbol_source_tickets = aggregate_ticket_decisions(ticket_decisions)
+    logs.append(f"Aggregated to {len(contributions_by_symbol)} symbols")
 
-    # Step 5: Apply portfolio governor
-    symbol_notionals, symbol_clamp_codes, portfolio_metrics = _apply_portfolio_governor(
-        symbol_notionals=symbol_notionals,
+    # Step 5: Apply portfolio governor (true per-name gross cap)
+    governor_result = apply_portfolio_governor(
+        contributions_by_symbol=contributions_by_symbol,
+        symbol_source_tickets=symbol_source_tickets,
         portfolio_max_gross_notional=portfolio_max_gross_notional,
         portfolio_max_name_gross_notional=portfolio_max_name_gross_notional,
         logs=logs,
     )
 
-    # Step 6: Add CASH leg for exact net zero
+    symbol_notionals = governor_result.symbol_net
+    symbol_clamp_codes = governor_result.symbol_clamp_codes
+    symbol_source_tickets = governor_result.symbol_source_tickets
+
+    # Step 6: Add CASH leg for exact net zero (AFTER all equity clamps)
     equity_net = sum(symbol_notionals.values())
     cash_notional = -equity_net
     symbol_notionals[CASH_SYMBOL] = cash_notional
@@ -214,7 +350,7 @@ def generate_ideal_portfolio(
         raise ValueError(f"Final net not zero: {final_net}")
 
     # Build portfolio records
-    portfolio_records = _build_portfolio_records(
+    portfolio_records = build_portfolio_records(
         run_id=run_id,
         asof_date=asof_date,
         symbol_notionals=symbol_notionals,
@@ -223,11 +359,11 @@ def generate_ideal_portfolio(
     )
 
     # Write artifacts
-    portfolio_df = _build_portfolio_dataframe(portfolio_records)
-    _write_ideal_portfolio(run_dir, portfolio_df)
-    _write_portfolio_blotter(run_dir, portfolio_records)
+    portfolio_df = build_portfolio_dataframe(portfolio_records)
+    write_ideal_portfolio(run_dir, portfolio_df)
+    write_portfolio_blotter(run_dir, portfolio_records)
 
-    # Compute final metrics
+    # Compute final metrics (equity gross explicitly excludes CASH)
     equity_symbols = [s for s in symbol_notionals if s != CASH_SYMBOL]
     equity_gross = sum(abs(symbol_notionals[s]) for s in equity_symbols)
     equity_net_final = sum(symbol_notionals[s] for s in equity_symbols)
@@ -237,12 +373,12 @@ def generate_ideal_portfolio(
         "equity_net": equity_net_final,
         "cash_notional": cash_notional,
         "final_net": final_net,
-        "name_caps_triggered_count": portfolio_metrics["name_caps_triggered"],
-        "portfolio_gross_clamped": portfolio_metrics["portfolio_gross_clamped"],
+        "name_caps_triggered_count": governor_result.name_caps_triggered,
+        "portfolio_gross_clamped": governor_result.portfolio_gross_clamped,
         "total_symbols": len(symbol_notionals),
         "total_tickets": len(ticket_decisions),
     }
-    _write_portfolio_metrics(run_dir, metrics)
+    write_portfolio_metrics(run_dir, metrics)
 
     # Write manifest
     manifest = {
@@ -278,72 +414,7 @@ def generate_ideal_portfolio(
     }
 
 
-def _aggregate_to_symbols(
-    ticket_decisions: List[Dict[str, Any]],
-) -> Tuple[Dict[str, float], Dict[str, List[str]]]:
-    # Aggregate ticket-level notionals to symbol-level
-    symbol_notionals: Dict[str, float] = defaultdict(float)
-    symbol_source_tickets: Dict[str, List[str]] = defaultdict(list)
-
-    for dec in ticket_decisions:
-        leg_a = dec["leg_a"]
-        leg_b = dec["leg_b"]
-        ticket_id = dec["ticket_id"]
-
-        symbol_notionals[leg_a] += dec["executed_notional_a"]
-        symbol_notionals[leg_b] += dec["executed_notional_b"]
-
-        if ticket_id not in symbol_source_tickets[leg_a]:
-            symbol_source_tickets[leg_a].append(ticket_id)
-        if ticket_id not in symbol_source_tickets[leg_b]:
-            symbol_source_tickets[leg_b].append(ticket_id)
-
-    return dict(symbol_notionals), dict(symbol_source_tickets)
-
-
-def _apply_portfolio_governor(
-    symbol_notionals: Dict[str, float],
-    portfolio_max_gross_notional: float,
-    portfolio_max_name_gross_notional: float,
-    logs: List[str],
-) -> Tuple[Dict[str, float], Dict[str, List[str]], Dict[str, Any]]:
-    # Apply portfolio-level constraints
-    symbol_clamp_codes: Dict[str, List[str]] = defaultdict(list)
-    name_caps_triggered = 0
-    portfolio_gross_clamped = False
-
-    # Step 1: Apply per-name gross cap
-    for symbol in sorted(symbol_notionals.keys()):
-        notional = symbol_notionals[symbol]
-        if abs(notional) > portfolio_max_name_gross_notional:
-            scale = portfolio_max_name_gross_notional / abs(notional)
-            old_notional = notional
-            symbol_notionals[symbol] = notional * scale
-            symbol_clamp_codes[symbol].append(CLAMP_NAME_GROSS)
-            name_caps_triggered += 1
-            logs.append(
-                f"Name cap: {symbol} scaled from {old_notional:,.0f} to {symbol_notionals[symbol]:,.0f}"
-            )
-
-    # Step 2: Apply portfolio gross cap
-    portfolio_gross = sum(abs(n) for n in symbol_notionals.values())
-    if portfolio_gross > portfolio_max_gross_notional:
-        scale = portfolio_max_gross_notional / portfolio_gross
-        portfolio_gross_clamped = True
-        for symbol in symbol_notionals:
-            symbol_notionals[symbol] = symbol_notionals[symbol] * scale
-            symbol_clamp_codes[symbol].append(CLAMP_PORTFOLIO_GROSS)
-        logs.append(f"Portfolio gross cap applied: scale={scale:.4f}")
-
-    metrics = {
-        "name_caps_triggered": name_caps_triggered,
-        "portfolio_gross_clamped": portfolio_gross_clamped,
-    }
-
-    return symbol_notionals, dict(symbol_clamp_codes), metrics
-
-
-def _build_portfolio_records(
+def build_portfolio_records(
     run_id: str,
     asof_date: date,
     symbol_notionals: Dict[str, float],
@@ -370,7 +441,7 @@ def _build_portfolio_records(
     return records
 
 
-def _build_portfolio_dataframe(records: List[Dict[str, Any]]) -> pl.DataFrame:
+def build_portfolio_dataframe(records: List[Dict[str, Any]]) -> pl.DataFrame:
     if not records:
         return pl.DataFrame(
             schema={
@@ -405,12 +476,12 @@ def _build_portfolio_dataframe(records: List[Dict[str, Any]]) -> pl.DataFrame:
     return df
 
 
-def _write_ideal_portfolio(run_dir: Path, df: pl.DataFrame) -> None:
+def write_ideal_portfolio(run_dir: Path, df: pl.DataFrame) -> None:
     output_path = run_dir / "ideal_portfolio.parquet"
     df.write_parquet(output_path)
 
 
-def _write_portfolio_blotter(run_dir: Path, records: List[Dict[str, Any]]) -> None:
+def write_portfolio_blotter(run_dir: Path, records: List[Dict[str, Any]]) -> None:
     output_path = run_dir / "portfolio_blotter.csv"
 
     if not records:
@@ -424,7 +495,7 @@ def _write_portfolio_blotter(run_dir: Path, records: List[Dict[str, Any]]) -> No
     df.write_csv(output_path)
 
 
-def _write_portfolio_metrics(run_dir: Path, metrics: Dict[str, Any]) -> None:
+def write_portfolio_metrics(run_dir: Path, metrics: Dict[str, Any]) -> None:
     import json
     metrics_path = run_dir / "metrics.json"
     with open(metrics_path, "w") as f:
@@ -437,9 +508,13 @@ def _create_empty_portfolio_result(
     run_id: str,
     asof_date: date,
     feature_version: str,
+    seed: int,
+    portfolio_max_gross_notional: float,
+    portfolio_max_name_gross_notional: float,
     logs: List[str],
 ) -> Dict[str, Any]:
     # Create an empty portfolio with just CASH = 0
+    # Use consistent seed and constraint values in manifest
     portfolio_records = [{
         "run_id": run_id,
         "asof_date": asof_date,
@@ -450,9 +525,9 @@ def _create_empty_portfolio_result(
         "is_cash": 1,
     }]
 
-    portfolio_df = _build_portfolio_dataframe(portfolio_records)
-    _write_ideal_portfolio(run_dir, portfolio_df)
-    _write_portfolio_blotter(run_dir, portfolio_records)
+    portfolio_df = build_portfolio_dataframe(portfolio_records)
+    write_ideal_portfolio(run_dir, portfolio_df)
+    write_portfolio_blotter(run_dir, portfolio_records)
 
     metrics = {
         "equity_gross": 0.0,
@@ -464,19 +539,21 @@ def _create_empty_portfolio_result(
         "total_symbols": 1,
         "total_tickets": 0,
     }
-    _write_portfolio_metrics(run_dir, metrics)
+    write_portfolio_metrics(run_dir, metrics)
 
+    # Use provided seed and constraint values for consistency
     manifest = {
         "run_id": run_id,
         "run_type": "ideal_portfolio",
         "asof_ts": datetime.utcnow().isoformat(),
         "asof_date": asof_date.isoformat(),
         "git_sha": get_git_sha(),
-        "seed": 0,
+        "seed": seed,
         "feature_version": feature_version,
         "controller_version": "none",
-        "portfolio_max_gross_notional": 0,
-        "portfolio_max_name_gross_notional": 0,
+        "model_version": None,
+        "portfolio_max_gross_notional": portfolio_max_gross_notional,
+        "portfolio_max_name_gross_notional": portfolio_max_name_gross_notional,
         "net_mode": NET_MODE_EXACT_ZERO,
         "cash_symbol": CASH_SYMBOL,
     }
