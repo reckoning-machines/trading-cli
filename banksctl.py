@@ -22,6 +22,7 @@ from src.reporting import (
     print_features_summary,
     print_controller_summary,
     generate_run_report,
+    print_realized_summary,
 )
 
 app = typer.Typer(help="Banks Pair-Trading Controller CLI")
@@ -305,6 +306,64 @@ def test_harness():
     else:
         console.print("\n[red]Some tests failed[/red]")
         raise typer.Exit(1)
+
+
+@app.command("realize")
+def realize(
+    asof: str = typer.Option(..., help="As-of date (YYYY-MM-DD)"),
+    run_id: str = typer.Option(..., help="Run ID to compute realized PnL for"),
+    cost_bps: float = typer.Option(1.0, help="Cost in basis points per turnover"),
+    label_version: str = typer.Option("v1", help="Label version string"),
+):
+    """Compute realized PnL labels for a completed run."""
+    config = get_config_or_exit()
+    ensure_directories(config)
+
+    from src.realized_pnl import compute_realized_pnl
+
+    asof_date = date.fromisoformat(asof)
+
+    console.print(f"\n[bold]Computing realized PnL[/bold]")
+    console.print(f"Run ID: {run_id}")
+    console.print(f"As-of date: {asof_date}")
+    console.print(f"Cost BPS: {cost_bps}")
+    console.print(f"Label version: {label_version}\n")
+
+    try:
+        result = compute_realized_pnl(
+            config=config,
+            run_id=run_id,
+            cost_bps=cost_bps,
+            label_version=label_version,
+        )
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+    realized_records = result["realized_records"]
+    summary = result["summary"]
+    validation_errors = result["validation_errors"]
+    run_dir = result["run_dir"]
+
+    if validation_errors:
+        console.print("[yellow]Validation warnings:[/yellow]")
+        for err in validation_errors:
+            console.print(f"  - {err}")
+        console.print()
+
+    print_realized_summary(realized_records, console)
+
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Count OK: {summary['count_ok']}")
+    console.print(f"  Count NO_PRICE_SKIP: {summary['count_no_price_skip']}")
+    console.print(f"  Total PnL Gross: ${summary['total_pnl_gross']:,.2f}")
+    console.print(f"  Total Costs: ${summary['total_costs']:,.2f}")
+    console.print(f"  Total PnL Net: ${summary['total_pnl_net']:,.2f}")
+    console.print(f"  Total Trade Notional: ${summary['total_trade_notional']:,.0f}")
+
+    console.print(f"\n[green]Realized PnL written to:[/green]")
+    console.print(f"  - {run_dir}/realized.parquet")
+    console.print(f"  - data/labels/realized/version={label_version}/asof_date={asof_date}/")
 
 
 if __name__ == "__main__":

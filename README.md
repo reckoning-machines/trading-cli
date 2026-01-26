@@ -47,7 +47,11 @@ Optional configuration:
 
     python banksctl.py run-controller --asof 2026-01-26 --seed 123
 
-5. View the report:
+5. Compute realized PnL:
+
+    python banksctl.py realize --asof 2026-01-26 --run-id RUN_ID
+
+6. View the report:
 
     python banksctl.py report RUN_ID
 
@@ -95,6 +99,16 @@ Validate system setup and configuration.
 
     python banksctl.py test-harness
 
+### realize
+
+Compute realized PnL labels for a completed run.
+
+    python banksctl.py realize --asof YYYY-MM-DD --run-id RUN_ID [--cost-bps 1.0] [--label-version v1]
+
+Outputs:
+- runs/run_id=RUN_ID/realized.parquet (run artifact)
+- data/labels/realized/version=v1/asof_date=YYYY-MM-DD/ (canonical labels)
+
 ## Ticket Format
 
 Tickets are YAML files placed in tickets/active/. Required fields:
@@ -133,6 +147,7 @@ Contents:
 - blotter.csv: Human-readable summary
 - metrics.json: Aggregate statistics
 - logs.txt: Execution log
+- realized.parquet: Realized PnL labels (after running realize command)
 
 ## Data Layout
 
@@ -147,6 +162,13 @@ Contents:
         pair_state/
           version=v1/
             asof_date=2026-01-26/part-0000.parquet
+      labels/
+        realized/
+          version=v1/
+            asof_date=2026-01-26/part-0000.parquet
+      state/
+        last_positions/
+          positions.parquet
 
 ## Controllers
 

@@ -45,6 +45,18 @@ Key design principles:
                              +------------------+
                              | runs/run_id=.../ |
                              | (artifacts)      |
+                             +--------+---------+
+                                     |
+                                     v
+                             +------------------+
+                             | realize          |
+                             | (PnL labels)     |
+                             +--------+---------+
+                                     |
+                                     v
+                             +------------------+
+                             | data/labels/     |
+                             | realized/        |
                              +------------------+
 
 ## Data Layout and Schemas
@@ -118,6 +130,44 @@ Decisions Schema:
 - est_daily_vol_dollars (float64): Estimated daily P&L volatility
 - feature_version (string): Feature version used
 - controller_version (string): Controller version used
+
+### Realized PnL Labels
+
+Run artifact path: runs/run_id=TIMESTAMP_HASH/realized.parquet
+Canonical path: data/labels/realized/version=VERSION/asof_date=DATE/part-0000.parquet
+
+Schema:
+- run_id (string): Run identifier
+- asof_date (date): Decision date
+- next_date (date): Next trading date for return calculation
+- ticket_id (string): Source ticket
+- pair_id (string): Pair identifier
+- leg_a (string): First leg symbol
+- leg_b (string): Second leg symbol
+- executed_notional_a (float64): Executed position in leg A
+- executed_notional_b (float64): Executed position in leg B
+- prev_notional_a (float64): Previous position in leg A
+- prev_notional_b (float64): Previous position in leg B
+- trade_notional (float64): Absolute turnover
+- gross_exposure (float64): Total absolute notional
+- ret_a (float64): Return on leg A
+- ret_b (float64): Return on leg B
+- pnl_gross (float64): Gross PnL before costs
+- costs (float64): Transaction costs
+- pnl_net (float64): Net PnL after costs
+- cost_bps (float64): Cost rate in basis points
+- label_version (string): Label version identifier
+- status (string): OK or NO_PRICE_SKIP
+
+### Position State Store
+
+Path: data/state/last_positions/positions.parquet
+
+Schema:
+- ticket_id (string): Ticket identifier
+- last_notional_a (float64): Last executed notional in leg A
+- last_notional_b (float64): Last executed notional in leg B
+- last_asof_date (date): Date of last execution
 
 ## Determinism and Replay Rules
 
@@ -250,5 +300,6 @@ To implement a full RL controller:
 - controller_baseline.py: Deterministic mean-reversion policy
 - controller_rl_stub.py: RL policy placeholder
 - run_engine.py: Orchestration, artifact generation
+- realized_pnl.py: Realized PnL and cost label computation
 - reporting.py: Terminal output formatting
 - banksctl.py: CLI entrypoint

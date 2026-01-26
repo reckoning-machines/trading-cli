@@ -179,3 +179,39 @@ def print_controller_summary(
         )
 
     console.print(table)
+
+
+def print_realized_summary(
+    records: list,
+    console: Optional[Console] = None,
+) -> None:
+    if console is None:
+        console = Console()
+
+    table = Table(title="Realized PnL")
+    table.add_column("Ticket ID", style="cyan")
+    table.add_column("Pair ID", style="green")
+    table.add_column("Status", style="yellow")
+    table.add_column("Ret A", justify="right")
+    table.add_column("Ret B", justify="right")
+    table.add_column("PnL Gross", justify="right")
+    table.add_column("Costs", justify="right")
+    table.add_column("PnL Net", justify="right")
+
+    for rec in records:
+        status_display = "[green]OK[/green]" if rec["status"] == "OK" else "[yellow]SKIP[/yellow]"
+
+        pnl_color = "green" if rec["pnl_net"] >= 0 else "red"
+
+        table.add_row(
+            rec["ticket_id"],
+            rec["pair_id"],
+            status_display,
+            f"{rec['ret_a']*100:.2f}%",
+            f"{rec['ret_b']*100:.2f}%",
+            f"${rec['pnl_gross']:,.2f}",
+            f"${rec['costs']:,.2f}",
+            f"[{pnl_color}]${rec['pnl_net']:,.2f}[/{pnl_color}]",
+        )
+
+    console.print(table)

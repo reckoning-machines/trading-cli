@@ -41,6 +41,22 @@ class Config:
     def pair_state_dir(self) -> Path:
         return self.features_dir / "pair_state"
 
+    @property
+    def labels_dir(self) -> Path:
+        return self.data_dir / "labels"
+
+    @property
+    def realized_labels_dir(self) -> Path:
+        return self.labels_dir / "realized"
+
+    @property
+    def state_dir(self) -> Path:
+        return self.data_dir / "state"
+
+    @property
+    def last_positions_dir(self) -> Path:
+        return self.state_dir / "last_positions"
+
 
 def load_config() -> Config:
     fmp_api_key = os.environ.get("FMP_API_KEY")
