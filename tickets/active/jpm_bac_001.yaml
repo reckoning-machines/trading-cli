@@ -1,0 +1,14 @@
+ticket_id: JPM_BAC_001
+type: PAIR
+leg_a: JPM
+leg_b: BAC
+orientation: LONG_SPREAD
+max_gross_notional: 1000000
+max_leg_notional: 600000
+horizon_days: 30
+conviction: 3
+entry_z: 1.5
+exit_z: 0.2
+time_stop_days: 20
+flatten_on_breakdown: true
+expires_on: 2026-12-31

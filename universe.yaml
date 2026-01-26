@@ -1,0 +1,21 @@
+tickers:
+  - JPM
+  - BAC
+  - WFC
+  - C
+  - GS
+  - MS
+  - SCHW
+  - PNC
+
+context_only:
+  - XLF
+  - KRE
+
+pair_suggestions:
+  - leg_a: JPM
+    leg_b: BAC
+  - leg_a: GS
+    leg_b: MS
+  - leg_a: WFC
+    leg_b: PNC

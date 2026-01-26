@@ -1,0 +1,14 @@
+ticket_id: GS_MS_001
+type: PAIR
+leg_a: GS
+leg_b: MS
+orientation: LONG_SPREAD
+max_gross_notional: 500000
+max_leg_notional: 300000
+horizon_days: 45
+conviction: 4
+entry_z: 2.0
+exit_z: 0.3
+time_stop_days: 30
+flatten_on_breakdown: true
+expires_on: 2026-12-31
