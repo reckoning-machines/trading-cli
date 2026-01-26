@@ -410,15 +410,67 @@ Portfolio Schema:
 ### Portfolio Constraints
 
 Environment variables:
-- PORTFOLIO_MAX_GROSS_NOTIONAL: Maximum total gross notional
-- PORTFOLIO_MAX_NAME_GROSS_NOTIONAL: Maximum gross per symbol
+- PORTFOLIO_MAX_GROSS_NOTIONAL: Maximum total equity gross notional (excludes CASH)
+- PORTFOLIO_MAX_NAME_GROSS_NOTIONAL: Maximum gross exposure per symbol
+
+Gross Exposure Definitions:
+- Per-name GROSS: sum(abs(per-ticket contributions)) for a symbol, NOT abs(net)
+  - Example: $500k long from ticket A + $500k short from ticket B = $1M gross, not $0
+- Portfolio GROSS: sum(abs(symbol_net)) for equity symbols only (excludes CASH)
+
+Clamp Order:
+1. Per-ticket governor (leg caps, ticket gross cap, breakdown)
+2. Per-name gross cap (scales all ticket contributions for that symbol)
+3. Portfolio gross cap (scales all equity positions proportionally)
+4. CASH leg added last (not subject to gross caps)
 
 Clamp codes:
-- NAME_GROSS_CLAMP: Symbol notional reduced to name cap
-- PORTFOLIO_GROSS_CLAMP: All notionals scaled to meet portfolio cap
+- NAME_GROSS_CLAMP: Symbol contributions scaled to meet per-name gross cap
+- PORTFOLIO_GROSS_CLAMP: All equity notionals scaled to meet portfolio gross cap
 - NET_TO_CASH: CASH leg added for exact net zero
 
 ### Ticket Drafting
 
 Draft tickets are saved to tickets/drafts/ and never overwrite tickets/active/.
 User must manually promote drafts to active.
+
+## Backtest Runner
+
+The backtest runner simulates portfolio performance over a historical date range.
+
+### Common Next Trading Date
+
+For PnL calculation, the backtest uses a single common next trading date across all equity symbols:
+1. For each equity symbol with non-trivial notional, get all dates > asof_date with price data
+2. Compute the intersection of these date sets
+3. Use the earliest common date for return calculation
+4. If no common date exists, skip that day entirely (no PnL recorded)
+
+This ensures consistent return horizons across all positions and prevents mixing different time periods.
+
+### Backtest Metrics
+
+The backtest tracks day counts explicitly:
+- total_trading_days: Days with feature data in the date range
+- days_with_features: Days where features were successfully loaded
+- days_skipped_due_to_prices: Days skipped because no common next trading date exists
+- days_with_pnl: Days where PnL was computed (days_with_features - days_skipped_due_to_prices)
+
+Performance metrics (Sharpe, averages) are computed only over days_with_pnl.
+
+### Backtest Timeseries Schema
+
+Path: runs/run_id=backtest_.../backtest_timeseries.parquet
+
+Schema:
+- run_id (string): Backtest run identifier
+- asof_date (date): Portfolio date
+- next_date (date): Common next trading date used for returns
+- equity_gross (float64): Total equity gross exposure (excludes CASH)
+- equity_net (float64): Net equity exposure
+- cash_notional (float64): CASH leg notional
+- turnover (float64): Absolute change in positions
+- costs (float64): Transaction costs
+- pnl_gross (float64): Gross PnL before costs
+- pnl_net (float64): Net PnL after costs
+- cumulative_pnl_net (float64): Running total of pnl_net

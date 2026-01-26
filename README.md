@@ -143,10 +143,15 @@ The console supports four intents:
 - **DRAFT_TICKET**: Create ticket drafts ("draft ticket for JPM and BAC")
 
 Portfolio constraints (environment variables):
-- PORTFOLIO_MAX_GROSS_NOTIONAL: Maximum total gross notional
-- PORTFOLIO_MAX_NAME_GROSS_NOTIONAL: Maximum gross per symbol
+- PORTFOLIO_MAX_GROSS_NOTIONAL: Maximum total equity gross notional (excludes CASH)
+- PORTFOLIO_MAX_NAME_GROSS_NOTIONAL: Maximum gross per symbol (sum of absolute per-ticket contributions)
 
 The portfolio generator enforces exact net zero exposure by adding a synthetic CASH leg.
+Per-name gross is computed as sum(abs(contributions)), not abs(net), ensuring offsetting positions
+from different tickets are correctly counted toward the gross cap.
+
+Backtest uses a common next trading date across all equity symbols for consistent PnL calculation.
+Days without a common next date are skipped and tracked in metrics (days_skipped_due_to_prices).
 
 ## Ticket Format
 
