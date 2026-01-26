@@ -150,8 +150,11 @@ The portfolio generator enforces exact net zero exposure by adding a synthetic C
 Per-name gross is computed as sum(abs(contributions)), not abs(net), ensuring offsetting positions
 from different tickets are correctly counted toward the gross cap.
 
-Backtest uses a common next trading date across all equity symbols for consistent PnL calculation.
-Days without a common next date are skipped and tracked in metrics (days_skipped_due_to_prices).
+Backtest behavior:
+- Uses a common next trading date across all equity symbols for consistent PnL calculation
+- Skips entire day if any equity symbol is missing price data (no partial PnL allowed)
+- Maintains portfolio state across skipped days for accurate turnover calculation
+- Tracks skipped days in metrics (days_skipped_due_to_prices)
 
 ## Ticket Format
 
