@@ -2,7 +2,7 @@
 
 from datetime import date
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 
 import polars as pl
 
@@ -14,20 +14,43 @@ STATUS_OK = "OK"
 STATUS_NO_PRICE_SKIP = "NO_PRICE_SKIP"
 
 
-def get_next_trading_date(
+def get_trading_dates_for_symbol(
     config: Config,
     symbol: str,
-    asof_date: date,
-) -> Optional[date]:
+) -> Set[date]:
     df = read_daily_bars(config, symbol)
     if df is None or df.is_empty():
+        return set()
+    return set(df["date"].to_list())
+
+
+def get_next_common_trading_date(
+    config: Config,
+    leg_a: str,
+    leg_b: str,
+    asof_date: date,
+) -> Optional[date]:
+    # Fix 10: Find the earliest date > asof_date that exists in BOTH legs
+    df_a = read_daily_bars(config, leg_a)
+    df_b = read_daily_bars(config, leg_b)
+
+    if df_a is None or df_a.is_empty():
+        return None
+    if df_b is None or df_b.is_empty():
         return None
 
-    future_dates = df.filter(pl.col("date") > asof_date).sort("date")
-    if future_dates.is_empty():
+    # Get dates > asof_date for each leg
+    dates_a = set(df_a.filter(pl.col("date") > asof_date)["date"].to_list())
+    dates_b = set(df_b.filter(pl.col("date") > asof_date)["date"].to_list())
+
+    # Compute intersection
+    common_dates = dates_a & dates_b
+
+    if not common_dates:
         return None
 
-    return future_dates["date"][0]
+    # Return the earliest common date
+    return min(common_dates)
 
 
 def get_price_on_date(
@@ -151,6 +174,14 @@ def compute_realized_pnl(
     if decisions_df is None or decisions_df.is_empty():
         raise ValueError(f"No decisions found in run: {run_id}")
 
+    # Fix 12: Enforce single asof_date per decisions file
+    unique_dates = decisions_df["asof_date"].unique()
+    if len(unique_dates) != 1:
+        raise ValueError(
+            f"Decisions contain multiple asof_date values: {unique_dates.to_list()}. "
+            "Expected exactly one asof_date per decisions file."
+        )
+
     leg_symbols = get_leg_symbols_from_blotter(run_dir)
 
     last_positions = read_last_positions(config)
@@ -180,13 +211,8 @@ def compute_realized_pnl(
         price_a_asof = get_price_on_date(config, leg_a, asof_date)
         price_b_asof = get_price_on_date(config, leg_b, asof_date)
 
-        next_date_a = get_next_trading_date(config, leg_a, asof_date)
-        next_date_b = get_next_trading_date(config, leg_b, asof_date)
-
-        if next_date_a is None or next_date_b is None:
-            next_date = None
-        else:
-            next_date = max(next_date_a, next_date_b)
+        # Fix 10: Use common next trading date for both legs
+        next_date = get_next_common_trading_date(config, leg_a, leg_b, asof_date)
 
         if next_date is not None:
             price_a_next = get_price_on_date(config, leg_a, next_date)
@@ -205,6 +231,8 @@ def compute_realized_pnl(
             abs(executed_notional_a - prev_notional_a) +
             abs(executed_notional_b - prev_notional_b)
         )
+
+        # Fix 11: Costs are always charged based on trade_notional
         costs = (cost_bps / 10000.0) * trade_notional
 
         gross_exposure = abs(executed_notional_a) + abs(executed_notional_b)
@@ -212,6 +240,7 @@ def compute_realized_pnl(
         if (price_a_asof is None or price_b_asof is None or
             price_a_next is None or price_b_next is None or
             next_date is None):
+            # Fix 11: NO_PRICE_SKIP still charges costs, pnl_net = -costs
             realized_records.append({
                 "run_id": run_id,
                 "asof_date": asof_date,
@@ -229,8 +258,8 @@ def compute_realized_pnl(
                 "ret_a": 0.0,
                 "ret_b": 0.0,
                 "pnl_gross": 0.0,
-                "costs": 0.0,
-                "pnl_net": 0.0,
+                "costs": costs,
+                "pnl_net": -costs,
                 "cost_bps": cost_bps,
                 "label_version": label_version,
                 "status": STATUS_NO_PRICE_SKIP,
@@ -358,9 +387,13 @@ def build_realized_dataframe(records: List[Dict[str, Any]]) -> pl.DataFrame:
 def validate_realized(df: pl.DataFrame, cost_bps: float) -> List[str]:
     errors = []
 
+    # Validate STATUS_OK rows
     ok_rows = df.filter(pl.col("status") == STATUS_OK)
     for row in ok_rows.iter_rows(named=True):
-        if row["next_date"] is not None and row["asof_date"] is not None:
+        # Fix 10 acceptance: next_date must be strictly > asof_date and not null
+        if row["next_date"] is None:
+            errors.append(f"Ticket {row['ticket_id']}: next_date is null for STATUS_OK")
+        elif row["asof_date"] is not None:
             if row["next_date"] <= row["asof_date"]:
                 errors.append(f"Ticket {row['ticket_id']}: next_date not > asof_date")
 
@@ -371,14 +404,21 @@ def validate_realized(df: pl.DataFrame, cost_bps: float) -> List[str]:
         if abs(row["costs"] - expected_costs) > 0.01:
             errors.append(f"Ticket {row['ticket_id']}: costs mismatch")
 
+    # Validate STATUS_NO_PRICE_SKIP rows
     skip_rows = df.filter(pl.col("status") == STATUS_NO_PRICE_SKIP)
     for row in skip_rows.iter_rows(named=True):
+        # Fix 11 acceptance: pnl_gross == 0
         if row["pnl_gross"] != 0.0:
             errors.append(f"Ticket {row['ticket_id']}: pnl_gross not 0 for NO_PRICE_SKIP")
-        if row["costs"] != 0.0:
-            errors.append(f"Ticket {row['ticket_id']}: costs not 0 for NO_PRICE_SKIP")
-        if row["pnl_net"] != 0.0:
-            errors.append(f"Ticket {row['ticket_id']}: pnl_net not 0 for NO_PRICE_SKIP")
+
+        # Fix 11 acceptance: costs equals the formula
+        expected_costs = (cost_bps / 10000.0) * row["trade_notional"]
+        if abs(row["costs"] - expected_costs) > 0.01:
+            errors.append(f"Ticket {row['ticket_id']}: costs mismatch for NO_PRICE_SKIP")
+
+        # Fix 11 acceptance: pnl_net == -costs
+        if abs(row["pnl_net"] - (-row["costs"])) > 0.01:
+            errors.append(f"Ticket {row['ticket_id']}: pnl_net not equal to -costs for NO_PRICE_SKIP")
 
     return errors
 
