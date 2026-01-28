@@ -1,25 +1,63 @@
-# The Risk Desk
-### A Deterministic Portfolio Construction and Risk Enforcement Engine for Bank-Sector Pair Strategies
+# Trading CLI
+### A Deterministic Portfolio Construction and Risk Evaluation Engine for Bank-Sector Pair Strategies
 
 ---
 
 ## Overview
 
-The Risk Desk is a deterministic, Parquet-first portfolio construction and risk-checking system for bank-sector equity pair strategies with explicit human-in-the-loop control.
+Trading CLI is a deterministic, Parquet-first **risk evaluation and portfolio construction system** designed to support **human-directed trading strategies** in bank-sector equity pairs.
 
-The system does not trade and does not execute orders.  
-It produces a daily ideal target portfolio under hard, mechanical risk constraints.
+In this system, **humans define the trades**.
 
-Core inputs:
-- Z-score mean-reversion state derived from price data
-- Human-authored strategy tickets (YAML)
-- Explicit ticket-level and portfolio-level risk limits
+Portfolio managers and researchers explicitly specify:
+- Which pairs to trade
+- The direction of the trade (spread orientation)
+- The maximum capital at risk
+- The time horizon and invalidation rules
 
-Core outputs:
-- A symbol-level ideal portfolio with exact net zero exposure
-- Fully reproducible artifacts suitable for audit, review, and backtesting
+These intentions are expressed as **strategy tickets**.
 
-Every run produces a complete artifact directory that enables deterministic replay and post-hoc inspection.
+Trading CLI does **not** originate trades, discover strategies, or exercise discretion.  
+Instead, it evaluates **how a human-defined strategy should be expressed today**, given current market state and hard risk constraints.
+
+Specifically, the system:
+- Evaluates whether a strategy is currently in-range for entry or exit
+- Determines appropriate **position sizing** within predefined budgets
+- Enforces ticket-level and portfolio-level risk limits mechanically
+- Produces a **daily ideal target portfolio**, not orders
+
+---
+
+## Division of Responsibility
+
+**Humans are responsible for:**
+- Strategy selection (what to trade)
+- Structural assumptions (why the trade exists)
+- Capital budgets and risk tolerance
+- Strategy lifecycle (activation and expiration)
+
+**Trading CLI is responsible for:**
+- Evaluating entry and exit conditions
+- Scaling exposure based on current signal strength
+- Enforcing per-leg, per-ticket, per-name, and portfolio-wide constraints
+- Ensuring exact net neutrality and conservative capital usage
+- Producing reproducible, auditable portfolio artifacts
+
+This separation ensures that **judgment remains human**, while **discipline is mechanical**.
+
+---
+
+## Outputs
+
+Each run produces:
+- A symbol-level **ideal portfolio** with exact net zero exposure
+- Explicit attribution from symbols back to strategy tickets
+- Detailed clamp and risk-enforcement logs
+- Immutable artifacts suitable for review, audit, and backtesting
+
+Trading CLI exists to answer a single question:
+
+**“Given the strategies I believe in, what is the safest and most disciplined way to express them today?”**
 
 ---
 
